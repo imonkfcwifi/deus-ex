@@ -1,9 +1,9 @@
 
-import React, { useState, useMemo, useEffect } from 'react';
-import { Faction, LogEntry, Person } from '../types';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { Faction, LogEntry, Person, Relationship, Secret } from '../types';
 import { FACTION_LORE_DATA } from '../constants';
 import { audio } from '../services/audioService';
-import { X, BookOpen, Book, Scroll, Users, MessageSquare, Shield, History, Skull, AlertCircle, TrendingUp, TrendingDown, Crown, User, Star, Cross, Loader2 } from 'lucide-react';
+import { X, BookOpen, Book, Scroll, Users, MessageSquare, Shield, History, Skull, AlertCircle, TrendingUp, TrendingDown, Crown, User, Star, Cross, Loader2, Heart, Zap, Search, Eye, Lock, FileText, ArrowRight, Link as LinkIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import RichText from './RichText';
 
@@ -22,6 +22,11 @@ const LoreModal: React.FC<LoreModalProps> = ({ factions, figures, logs, keywords
   const [selectedFactionName, setSelectedFactionName] = useState<string | null>(null);
   const [selectedFigureId, setSelectedFigureId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'lore' | 'history'>('lore');
+  const [activePersonTab, setActivePersonTab] = useState<'profile' | 'relationships' | 'secrets'>('profile');
+  
+  // Navigation & Highlighting State
+  const [highlightedLogId, setHighlightedLogId] = useState<string | null>(null);
+  const logRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   // Initialization Logic: linking input string to either a faction or a person
   useEffect(() => {
@@ -56,6 +61,19 @@ const LoreModal: React.FC<LoreModalProps> = ({ factions, figures, logs, keywords
           onRequestPortrait(selectedFigure.id);
       }
   }, [selectedFigure, onRequestPortrait]);
+
+  // Handle Scroll to Highlighted Log
+  useEffect(() => {
+      if (highlightedLogId && activePersonTab === 'profile') {
+          const el = logRefs.current.get(highlightedLogId);
+          if (el) {
+              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              // Clear highlight after animation
+              const timer = setTimeout(() => setHighlightedLogId(null), 2000);
+              return () => clearTimeout(timer);
+          }
+      }
+  }, [highlightedLogId, activePersonTab]);
   
   // If we have a selected figure, we override the faction data display to show person profile
   const isPersonView = !!selectedFigure;
@@ -90,6 +108,45 @@ const LoreModal: React.FC<LoreModalProps> = ({ factions, figures, logs, keywords
     audio.playClick();
     setSelectedFigureId(person.id);
     setSelectedFactionName(person.factionName); // Ensure sidebar highlights correct faction
+    setActivePersonTab('profile'); // Reset tab
+  };
+  
+  // Handle clicking a related person from the Relationship Web
+  const handleSelectRelationshipTarget = (targetId: string, targetName: string) => {
+      audio.playClick();
+      // Try to find by ID first
+      const person = figures.find(p => p.id === targetId);
+      if (person) {
+          handleSelectFigure(person);
+      } else {
+          // Try to find by name if ID was generic or mismatched
+          const personByName = figures.find(p => p.name === targetName);
+          if (personByName) {
+              handleSelectFigure(personByName);
+          } else {
+              console.warn("Target figure not found in current figures list.");
+          }
+      }
+  };
+
+  const handleJumpToLog = (logId: string) => {
+      audio.playClick();
+      setActivePersonTab('profile');
+      // Small timeout to allow tab switch render before scrolling
+      setTimeout(() => {
+          setHighlightedLogId(logId);
+      }, 100);
+  };
+
+  const findRelatedLog = (secretText: string) => {
+    // Try to find year references like "Year 105" or "105년"
+    const yearMatch = secretText.match(/Year (\d+)/i) || secretText.match(/(\d+)년/);
+    if (yearMatch) {
+        const year = parseInt(yearMatch[1]);
+        // Find a log in the person's history that matches that year
+        return personHistory.find(l => l.year === year);
+    }
+    return null;
   };
 
   const handleClose = () => {
@@ -185,19 +242,19 @@ const LoreModal: React.FC<LoreModalProps> = ({ factions, figures, logs, keywords
                             animate={{ opacity: 1, x: 0 }}
                             exit={{ opacity: 0, x: -20 }}
                             transition={{ duration: 0.3 }}
-                            className="p-6 md:p-10"
+                            className="p-6 md:p-10 h-full flex flex-col"
                         >
                             <button 
                                 onClick={() => setSelectedFigureId(null)}
-                                className="mb-6 flex items-center gap-2 text-sm text-slate-400 hover:text-god-gold transition-colors"
+                                className="mb-6 flex items-center gap-2 text-sm text-slate-400 hover:text-god-gold transition-colors flex-shrink-0"
                             >
                                 ← Back to {selectedFactionName}
                             </button>
 
-                            <div className="flex flex-col md:flex-row gap-8">
-                                {/* Profile Card */}
-                                <div className="w-full md:w-1/3 flex flex-col gap-4">
-                                    <div className="aspect-[3/4] bg-slate-900 rounded-xl border border-white/10 relative overflow-hidden shadow-2xl group">
+                            <div className="flex flex-col md:flex-row gap-8 flex-1 overflow-hidden">
+                                {/* Left Column: Portrait & Stats */}
+                                <div className="w-full md:w-1/3 flex flex-col gap-4 flex-shrink-0 overflow-y-auto scrollbar-hide">
+                                    <div className="aspect-[3/4] bg-slate-900 rounded-xl border border-white/10 relative overflow-hidden shadow-2xl group flex-shrink-0">
                                          {/* Portrait Logic */}
                                          {selectedFigure.portraitUrl ? (
                                              <motion.img 
@@ -256,43 +313,194 @@ const LoreModal: React.FC<LoreModalProps> = ({ factions, figures, logs, keywords
                                     </div>
                                 </div>
 
-                                {/* Biography & Timeline */}
-                                <div className="flex-1 space-y-8">
-                                    <div>
-                                        <h3 className="flex items-center gap-2 text-god-gold font-display text-lg mb-3 border-b border-god-gold/20 pb-1">
-                                            <Scroll size={18} />
-                                            <span>Biography</span>
-                                        </h3>
-                                        <div className="prose prose-invert max-w-none">
-                                            <p className="text-slate-300 font-serif leading-relaxed text-lg italic opacity-90">
-                                                "{selectedFigure.description}"
-                                            </p>
-                                            <p className="text-slate-400 font-sans text-sm leading-relaxed mt-4 whitespace-pre-wrap">
-                                                <RichText content={selectedFigure.biography} keywords={availableKeywords} onLinkClick={onLinkClick} />
-                                            </p>
-                                        </div>
+                                {/* Right Column: Tabs (Biography, Relationships, Secrets) */}
+                                <div className="flex-1 flex flex-col h-full overflow-hidden">
+                                    <div className="flex gap-2 mb-4 p-1 bg-slate-900/80 rounded-lg border border-white/5 flex-shrink-0">
+                                         <button 
+                                            onClick={() => setActivePersonTab('profile')}
+                                            className={`flex-1 py-2 rounded-md text-xs font-bold uppercase tracking-widest transition-all ${activePersonTab === 'profile' ? 'bg-god-gold text-slate-900' : 'text-slate-500 hover:text-slate-300'}`}
+                                         >
+                                            Profile & Bio
+                                         </button>
+                                         <button 
+                                            onClick={() => setActivePersonTab('relationships')}
+                                            className={`flex-1 py-2 rounded-md text-xs font-bold uppercase tracking-widest transition-all ${activePersonTab === 'relationships' ? 'bg-god-gold text-slate-900' : 'text-slate-500 hover:text-slate-300'}`}
+                                         >
+                                            Relationships
+                                         </button>
+                                         <button 
+                                            onClick={() => setActivePersonTab('secrets')}
+                                            className={`flex-1 py-2 rounded-md text-xs font-bold uppercase tracking-widest transition-all ${activePersonTab === 'secrets' ? 'bg-red-500 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                                         >
+                                            Secrets
+                                         </button>
                                     </div>
 
-                                    <div>
-                                        <h3 className="flex items-center gap-2 text-god-gold font-display text-lg mb-3 border-b border-god-gold/20 pb-1">
-                                            <History size={18} />
-                                            <span>Life Chronicle</span>
-                                        </h3>
-                                        <div className="space-y-4 pl-2 border-l border-white/10">
-                                            {personHistory.length > 0 ? (
-                                                personHistory.map(log => (
-                                                    <div key={log.id} className="relative pl-6">
-                                                        <div className="absolute left-[-5px] top-1.5 w-2.5 h-2.5 rounded-full bg-slate-800 border border-slate-600"></div>
-                                                        <div className="text-xs font-mono text-slate-500 mb-1">Year {log.year}</div>
-                                                        <p className="text-sm text-slate-300 leading-relaxed">
-                                                            <RichText content={log.content} keywords={availableKeywords} onLinkClick={onLinkClick} />
-                                                        </p>
+                                    <div className="flex-1 overflow-y-auto scrollbar-hide pr-2">
+                                        <AnimatePresence mode="wait">
+                                            {activePersonTab === 'profile' && (
+                                                <motion.div key="prof" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="space-y-8">
+                                                    <div>
+                                                        <h3 className="flex items-center gap-2 text-god-gold font-display text-lg mb-3 border-b border-god-gold/20 pb-1">
+                                                            <Scroll size={18} />
+                                                            <span>Biography</span>
+                                                        </h3>
+                                                        <div className="prose prose-invert max-w-none">
+                                                            <p className="text-slate-300 font-serif leading-relaxed text-lg italic opacity-90">
+                                                                "{selectedFigure.description}"
+                                                            </p>
+                                                            <p className="text-slate-400 font-sans text-sm leading-relaxed mt-4 whitespace-pre-wrap">
+                                                                <RichText content={selectedFigure.biography} keywords={availableKeywords} onLinkClick={onLinkClick} />
+                                                            </p>
+                                                        </div>
                                                     </div>
-                                                ))
-                                            ) : (
-                                                <p className="text-slate-600 italic text-sm pl-6">No specific historical records found yet.</p>
+
+                                                    <div>
+                                                        <h3 className="flex items-center gap-2 text-god-gold font-display text-lg mb-3 border-b border-god-gold/20 pb-1">
+                                                            <History size={18} />
+                                                            <span>Life Chronicle</span>
+                                                        </h3>
+                                                        <div className="space-y-4 pl-2 border-l border-white/10">
+                                                            {personHistory.length > 0 ? (
+                                                                personHistory.map(log => (
+                                                                    <div 
+                                                                        key={log.id} 
+                                                                        ref={(el) => {
+                                                                            if (el) logRefs.current.set(log.id, el);
+                                                                        }}
+                                                                        className={`relative pl-6 p-2 rounded transition-all duration-500 ${highlightedLogId === log.id ? 'bg-god-gold/20 shadow-[0_0_15px_rgba(212,175,55,0.2)]' : ''}`}
+                                                                    >
+                                                                        <div className={`absolute left-[-5px] top-3 w-2.5 h-2.5 rounded-full border transition-colors ${highlightedLogId === log.id ? 'bg-god-gold border-white' : 'bg-slate-800 border-slate-600'}`}></div>
+                                                                        <div className="text-xs font-mono text-slate-500 mb-1">Year {log.year}</div>
+                                                                        <p className="text-sm text-slate-300 leading-relaxed">
+                                                                            <RichText content={log.content} keywords={availableKeywords} onLinkClick={onLinkClick} />
+                                                                        </p>
+                                                                    </div>
+                                                                ))
+                                                            ) : (
+                                                                <p className="text-slate-600 italic text-sm pl-6">No specific historical records found yet.</p>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </motion.div>
                                             )}
-                                        </div>
+
+                                            {activePersonTab === 'relationships' && (
+                                                <motion.div key="rels" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="space-y-4">
+                                                    <h3 className="flex items-center gap-2 text-god-gold font-display text-lg mb-4 border-b border-god-gold/20 pb-1">
+                                                        <Users size={18} />
+                                                        <span>Social Web</span>
+                                                    </h3>
+                                                    <div className="grid gap-3">
+                                                        {selectedFigure.relationships && selectedFigure.relationships.length > 0 ? (
+                                                            selectedFigure.relationships.map((rel, idx) => (
+                                                                <div key={idx} className="bg-slate-900/50 p-4 rounded-lg border border-white/5 flex items-center justify-between group hover:border-white/20 transition-all">
+                                                                    <div className="flex-1">
+                                                                        <div className="flex items-center gap-2 mb-1">
+                                                                            <button 
+                                                                                onClick={() => handleSelectRelationshipTarget(rel.targetId, rel.targetName)}
+                                                                                className="text-slate-200 font-bold hover:text-god-gold hover:underline"
+                                                                            >
+                                                                                {rel.targetName}
+                                                                            </button>
+                                                                            <span className={`text-[10px] px-1.5 py-0.5 rounded border uppercase tracking-wider ${
+                                                                                rel.value > 0 ? 'bg-blue-900/30 text-blue-300 border-blue-500/30' : 'bg-red-900/30 text-red-300 border-red-500/30'
+                                                                            }`}>
+                                                                                {rel.type}
+                                                                            </span>
+                                                                        </div>
+                                                                        <p className="text-xs text-slate-400 italic">"{rel.description}"</p>
+                                                                    </div>
+                                                                    <div className="w-24 ml-4">
+                                                                        <div className="flex justify-between text-[9px] text-slate-500 mb-1">
+                                                                            <span>Rivalry</span>
+                                                                            <span>Trust</span>
+                                                                        </div>
+                                                                        <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden relative">
+                                                                            {/* Center Line */}
+                                                                            <div className="absolute left-1/2 top-0 bottom-0 w-px bg-white/20"></div>
+                                                                            {/* Bar */}
+                                                                            <div 
+                                                                                className={`h-full absolute top-0 bottom-0 transition-all duration-500 ${rel.value > 0 ? 'bg-blue-500 left-1/2' : 'bg-red-500 right-1/2'}`}
+                                                                                style={{ width: `${Math.abs(rel.value / 2)}%` }}
+                                                                            />
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            ))
+                                                        ) : (
+                                                            <div className="text-center py-10 text-slate-600 italic border border-dashed border-white/10 rounded-lg">
+                                                                <Search className="mx-auto mb-2 opacity-50" />
+                                                                No known close associates or rivals recorded yet.
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </motion.div>
+                                            )}
+
+                                            {activePersonTab === 'secrets' && (
+                                                <motion.div key="sec" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="space-y-4">
+                                                    <h3 className="flex items-center gap-2 text-red-400 font-display text-lg mb-4 border-b border-red-900/30 pb-1">
+                                                        <Eye size={18} />
+                                                        <span>Shadows & Whispers</span>
+                                                    </h3>
+                                                    <div className="space-y-3">
+                                                        {selectedFigure.secrets && selectedFigure.secrets.length > 0 ? (
+                                                            selectedFigure.secrets.map((secret) => {
+                                                                const relatedLog = findRelatedLog(secret.description);
+                                                                return (
+                                                                    <div key={secret.id} className="relative bg-[#1a0f0f] border border-red-900/20 p-4 rounded-lg overflow-hidden group">
+                                                                        {/* Caution Tape Effect */}
+                                                                        <div className="absolute top-0 right-0 p-1">
+                                                                            {secret.severity === 'Fatal' && <AlertCircle size={16} className="text-red-500" />}
+                                                                            {secret.severity === 'Scandal' && <Zap size={16} className="text-orange-500" />}
+                                                                            {secret.severity === 'Gossip' && <MessageSquare size={16} className="text-slate-500" />}
+                                                                        </div>
+                                                                        
+                                                                        <div className="flex items-center gap-2 mb-2">
+                                                                            <Lock size={12} className="text-slate-500" />
+                                                                            <span className={`text-xs font-mono uppercase tracking-widest ${
+                                                                                secret.severity === 'Fatal' ? 'text-red-500 font-bold' : 
+                                                                                secret.severity === 'Scandal' ? 'text-orange-400' : 'text-slate-400'
+                                                                            }`}>
+                                                                                {secret.severity}
+                                                                            </span>
+                                                                        </div>
+                                                                        
+                                                                        <h4 className="text-slate-200 font-display font-bold text-sm mb-1">{secret.title}</h4>
+                                                                        <p className="text-slate-400 text-sm font-serif italic border-l-2 border-red-900/30 pl-3 py-1">
+                                                                            <RichText content={secret.description} keywords={availableKeywords} onLinkClick={onLinkClick} />
+                                                                        </p>
+
+                                                                        {/* Link to Evidence Log */}
+                                                                        {relatedLog && (
+                                                                            <button 
+                                                                                onClick={() => handleJumpToLog(relatedLog.id)}
+                                                                                className="mt-3 flex items-center gap-2 text-xs text-blue-400 hover:text-blue-300 transition-colors bg-blue-900/20 px-3 py-1.5 rounded border border-blue-500/20 hover:bg-blue-900/30 hover:border-blue-500/40 w-full"
+                                                                            >
+                                                                                <FileText size={12} />
+                                                                                <span>View Corroborating Record (Year {relatedLog.year})</span>
+                                                                                <ArrowRight size={12} className="ml-auto opacity-70" />
+                                                                            </button>
+                                                                        )}
+                                                                        
+                                                                        <div className="mt-2 pt-2 border-t border-white/5 flex justify-between items-center text-[10px] text-slate-600">
+                                                                            <span>Known by: {secret.knownBy?.length || 0} observers</span>
+                                                                            <span className="font-mono">ID: {secret.id.split('-')[0]}</span>
+                                                                        </div>
+                                                                    </div>
+                                                                );
+                                                            })
+                                                        ) : (
+                                                            <div className="text-center py-10 text-slate-600 italic border border-dashed border-white/10 rounded-lg">
+                                                                <Lock className="mx-auto mb-2 opacity-50" />
+                                                                This person's secrets are well kept... for now.
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </motion.div>
+                                            )}
+                                        </AnimatePresence>
                                     </div>
                                 </div>
                             </div>

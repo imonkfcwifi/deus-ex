@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { LogEntry, WorldStats, Faction, PendingDecision, LogType, Person } from './types';
 import { advanceSimulation, generatePortrait, initializeAI } from './services/geminiService';
@@ -10,7 +11,7 @@ import StatsPanel from './components/StatsPanel';
 import DecisionModal from './components/DecisionModal';
 import LoreModal from './components/LoreModal';
 import StartScreen from './components/StartScreen';
-import { Send, Hourglass, Play, Pause, Clock, Map as MapIcon, BookOpen, BarChart3, Volume2, VolumeX, Save, RotateCcw, AlertTriangle, ScrollText, PenTool } from 'lucide-react';
+import { Send, Hourglass, Play, Pause, Clock, Map as MapIcon, BookOpen, BarChart3, Volume2, VolumeX, Save, RotateCcw, AlertTriangle, ScrollText, PenTool, MessageSquareDashed } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const INITIAL_STATS: WorldStats = {
@@ -48,6 +49,7 @@ const App: React.FC = () => {
   const [pendingDecision, setPendingDecision] = useState<PendingDecision | null>(null);
 
   const [input, setInput] = useState("");
+  const [queuedInput, setQueuedInput] = useState<string | null>(null); // New: For queuing commands during loading
   const [loading, setLoading] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true); // New loading state for DB load
   
@@ -119,6 +121,19 @@ const App: React.FC = () => {
 
     return () => clearTimeout(timeoutId);
   }, [stats, factions, figures, logs, pendingDecision, isInitializing, gameStarted]);
+
+  // Command Queue Processor
+  // When loading finishes, check if there's a queued command and execute it
+  useEffect(() => {
+      if (!loading && queuedInput) {
+          const cmd = queuedInput;
+          setQueuedInput(null);
+          // Small delay to let the UI settle
+          setTimeout(() => {
+              handleTurn(cmd, null, 1);
+          }, 100);
+      }
+  }, [loading, queuedInput]);
 
   // Android Back Button Handling (Popstate)
   useEffect(() => {
@@ -206,6 +221,20 @@ const App: React.FC = () => {
           }
       } finally {
           generatingPortraitsRef.current.delete(personId);
+      }
+  };
+
+  // Handles input submission (queueing or immediate)
+  const handleCommandSubmit = () => {
+      const cmd = input.trim();
+      if (!cmd) return;
+
+      if (loading) {
+          setQueuedInput(cmd);
+          setInput("");
+          audio.playClick();
+      } else {
+          handleTurn(cmd, null, 1);
       }
   };
 
@@ -312,7 +341,7 @@ const App: React.FC = () => {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (input.trim()) handleTurn(input, null, 1);
+      handleCommandSubmit();
     }
   };
 
@@ -527,13 +556,31 @@ const App: React.FC = () => {
         `}>
             <div className={`
                 max-w-2xl mx-auto relative group transition-all duration-300
-                ${input ? 'scale-105 -translate-y-2' : 'scale-100'}
+                ${input || queuedInput ? 'scale-105 -translate-y-2' : 'scale-100'}
             `}>
                 <div 
-                    className={`absolute -inset-1 bg-gradient-to-r from-transparent via-god-gold/20 to-transparent rounded-2xl blur-xl transition-all duration-500 ${input ? 'opacity-100' : 'opacity-0'}`} 
+                    className={`absolute -inset-1 bg-gradient-to-r from-transparent via-god-gold/20 to-transparent rounded-2xl blur-xl transition-all duration-500 ${input || queuedInput ? 'opacity-100' : 'opacity-0'}`} 
                     style={{ '--tw-gradient-via': 'var(--theme-primary)' } as React.CSSProperties}
                 />
                 
+                {/* Queue Notification Bubble */}
+                <AnimatePresence>
+                    {queuedInput && (
+                        <motion.div 
+                            initial={{ opacity: 0, y: 10, scale: 0.9 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: 10, scale: 0.9 }}
+                            className="absolute -top-10 left-0 right-0 flex justify-center pointer-events-none z-50"
+                        >
+                             <div className="bg-slate-900/90 border border-god-gold/30 rounded-lg px-3 py-1.5 flex items-center gap-2 shadow-lg backdrop-blur text-xs">
+                                 <MessageSquareDashed size={14} className="text-god-gold animate-pulse" />
+                                 <span className="text-slate-300">신탁 예약됨:</span>
+                                 <span className="text-white font-serif italic truncate max-w-[200px]">"{queuedInput}"</span>
+                             </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
                 <div className="relative flex items-center bg-slate-900/80 backdrop-blur-xl border border-god-gold/30 rounded-2xl shadow-2xl overflow-hidden group-focus-within:border-god-gold group-focus-within:shadow-[0_0_30px_rgba(0,0,0,0.15)] transition-all duration-500">
                     <input
                         type="text"
@@ -542,16 +589,15 @@ const App: React.FC = () => {
                         onKeyDown={handleKeyDown}
                         onFocus={handleInputFocus}
                         onBlur={handleInputBlur}
-                        placeholder={loading ? "역사가 쓰여지는 중..." : "신탁을 내려 역사에 개입하십시오..."}
-                        disabled={loading}
-                        className="w-full bg-transparent px-4 md:px-6 py-3 md:py-4 text-slate-100 placeholder-slate-500 focus:outline-none font-serif text-base md:text-lg tracking-wide disabled:opacity-50"
+                        placeholder={"신탁을 내려 역사에 개입하십시오..."}
+                        className="w-full bg-transparent px-4 md:px-6 py-3 md:py-4 text-slate-100 placeholder-slate-500 focus:outline-none font-serif text-base md:text-lg tracking-wide"
                     />
                     <button 
-                        onClick={() => input.trim() && handleTurn(input, null, 1)}
-                        disabled={!input.trim() || loading}
+                        onClick={handleCommandSubmit}
+                        disabled={!input.trim()}
                         className="p-4 text-god-gold hover:text-white disabled:opacity-30 transition-colors relative"
                     >
-                         {loading ? <Hourglass className="animate-spin-slow" /> : <Send />}
+                         {loading ? <Hourglass className="animate-spin-slow opacity-50" /> : <Send />}
                     </button>
                     
                     <div className={`absolute bottom-0 left-0 h-[2px] bg-gradient-to-r from-transparent via-god-gold to-transparent transition-all duration-500 ${input ? 'w-full opacity-100' : 'w-0 opacity-0 left-1/2'}`} />

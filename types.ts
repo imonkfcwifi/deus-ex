@@ -26,6 +26,22 @@ export interface Faction {
   region?: string; // "North", "South", "East", "West", "Center", "Coast"
 }
 
+export interface Relationship {
+  targetId: string; // ID of the other person
+  targetName: string; // Name for fallback display
+  value: number; // -100 (Nemesis) to 100 (Soulmate)
+  type: string; // "Rival", "Mentor", "Lover", "Suspicious"
+  description: string; // "Blames them for the harvest failure"
+}
+
+export interface Secret {
+  id: string;
+  title: string; // "Secret Correspondence"
+  description: string; // "Secretly exchanging letters with the enemy faction leader."
+  severity: 'Gossip' | 'Scandal' | 'Fatal'; 
+  knownBy: string[]; // List of IDs who know this secret (could include player)
+}
+
 export interface Person {
   id: string;
   name: string;
@@ -38,6 +54,8 @@ export interface Person {
   status: 'Alive' | 'Dead' | 'Missing' | 'Ascended';
   traits: string[]; // e.g. ["Ambitious", "Heretic"]
   portraitUrl?: string; // Base64 image data
+  relationships: Relationship[]; // Social web
+  secrets: Secret[]; // Hidden info
 }
 
 export interface WorldStats {

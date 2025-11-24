@@ -1,57 +1,104 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { Faction, WorldStats, LogEntry, SimulationResult, LogType, Person } from "../types";
 
-// Switched to 2.5 Flash for better stability and speed
-const TEXT_MODEL_NAME = "gemini-2.5-flash";
-const IMAGE_MODEL_NAME = "gemini-2.5-flash-image";
+// --- Configuration ---
+export type AIProvider = 'gemini' | 'claude';
 
-// Default Env Key (Fallback)
-const DEFAULT_API_KEY = (typeof process !== 'undefined' && process.env) ? process.env.API_KEY : '';
+const GEMINI_TEXT_MODEL = "gemini-2.5-flash";
+const GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image";
+const CLAUDE_TEXT_MODEL = "claude-3-5-haiku-latest"; // Using the latest efficient model
 
-// Dynamic AI Instance
-let ai: GoogleGenAI | null = null;
+// State to track current config
+let currentProvider: AIProvider = 'gemini';
+let geminiInstance: GoogleGenAI | null = null;
+let currentApiKey: string = '';
+
+const DEFAULT_ENV_KEY = (typeof process !== 'undefined' && process.env) ? process.env.API_KEY : '';
+
+// --- Initialization ---
 
 /**
- * Initializes the AI instance with the best available key.
- * Priority: User Input -> LocalStorage -> Environment Variable
+ * Initializes the AI service with a specific provider and key.
  */
-export const initializeAI = (userKey?: string) => {
+export const initializeAI = (userKey?: string, provider: AIProvider = 'gemini') => {
+  currentProvider = provider;
+  
+  // Storage keys differ by provider
+  const storageKey = provider === 'gemini' ? 'user_gemini_api_key' : 'user_claude_api_key';
+  
   let keyToUse = userKey;
-
   if (!keyToUse) {
-    // Try LocalStorage
-    keyToUse = localStorage.getItem('user_gemini_api_key') || '';
+      keyToUse = localStorage.getItem(storageKey) || '';
+  }
+  
+  // Fallback for Gemini Env
+  if (!keyToUse && provider === 'gemini') {
+      keyToUse = DEFAULT_ENV_KEY;
   }
 
-  if (!keyToUse) {
-    // Fallback to Env
-    keyToUse = DEFAULT_API_KEY;
-  }
+  currentApiKey = keyToUse || '';
 
-  // Save to local storage if it's a valid user input
+  // Persist preference
+  localStorage.setItem('ai_provider', provider);
   if (userKey) {
-      localStorage.setItem('user_gemini_api_key', userKey);
+      localStorage.setItem(storageKey, userKey);
   }
 
-  // Initialize
-  if (keyToUse) {
+  if (provider === 'gemini' && currentApiKey) {
       try {
-        ai = new GoogleGenAI({ apiKey: keyToUse });
-        console.log("Gemini AI Initialized successfully.");
+        geminiInstance = new GoogleGenAI({ apiKey: currentApiKey });
+        console.log("Gemini AI Initialized.");
         return true;
       } catch (e) {
-          console.error("Failed to initialize Gemini AI:", e);
+          console.error("Failed to initialize Gemini:", e);
           return false;
       }
-  } else {
-      console.warn("No API Key found. AI features will be disabled or fail.");
-      return false;
+  } else if (provider === 'claude' && currentApiKey) {
+      console.log("Claude AI Configuration Set.");
+      return true;
   }
+
+  console.warn("No valid API Key found for selected provider.");
+  return false;
 };
 
-/**
- * The core engine prompt generator.
- */
+// --- Claude API Logic (Fetch based) ---
+
+async function callClaudeAPI(system: string, userPrompt: string): Promise<any> {
+    if (!currentApiKey) throw new Error("Claude API Key missing");
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+            "x-api-key": currentApiKey,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            "dangerously-allow-browser": "true" // Required for client-side usage if supported by their CORS policy
+        },
+        body: JSON.stringify({
+            model: CLAUDE_TEXT_MODEL,
+            max_tokens: 4000,
+            system: system,
+            messages: [
+                { role: "user", content: userPrompt }
+            ]
+        })
+    });
+
+    if (!response.ok) {
+        const err = await response.json();
+        throw new Error(`Claude API Error: ${err.error?.message || response.statusText}`);
+    }
+
+    const data = await response.json();
+    const text = data.content[0]?.text || "{}";
+    return JSON.parse(text); // Assuming prompts enforces JSON
+}
+
+
+// --- Prompt Generators ---
+
 const generateSimulationPrompt = (
   currentStats: WorldStats,
   factions: Faction[],
@@ -59,83 +106,95 @@ const generateSimulationPrompt = (
   recentLogs: LogEntry[],
   playerInput?: string,
   decisionChoice?: string,
-  yearsToAdvance: number = 10
+  yearsToAdvance: number = 10,
+  isClaude: boolean = false
 ) => {
-  // Defensive: Ensure recentLogs is an array
   const safeLogs = Array.isArray(recentLogs) ? recentLogs : [];
   const logSummary = safeLogs.slice(-5).map(l => `[${l.type}] ${l.content}`).join('\n');
   
-  // Simplify figures for prompt to save tokens
-  const figureSummary = activeFigures.map(f => `${f.name} (${f.role}, ${f.factionName}, Age: ${currentStats.year - f.birthYear})`).join(', ');
+  // Simplify figures context to ID/Name/Faction for relationship mapping
+  const figureContext = activeFigures.map(f => ({ id: f.id, name: f.name, faction: f.factionName, role: f.role }) );
+  const figureSummary = activeFigures.map(f => `${f.name} (${f.role}, ${f.factionName})`).join(', ');
 
-  return `
-    Role: You are the "Deus Ex Machina Engine". You are simulating a vast, diverse world where the user is a Real God.
+  const systemContext = `
+    Role: You are the "Deus Ex Machina Engine". Simulating a world where the user is a Real God.
+    Style: readable Korean Biblical style (성경체/문어체). End sentences with "~하였더라", "~하니라".
+    Mechanics: Butterfly Effect, Silence is a Choice.
     
-    CORE MECHANICS:
-    1. **Butterfly Effect**: Small choices must have delayed, massive consequences.
-    2. **Silence is a Choice**: If the player ignores a specific prayer (PendingDecision), ONLY THEN generate a "Silent God" log. If it is just normal time passing, do NOT mention the God's silence. Just show history.
-    3. **Writing Style (CRITICAL)**:
-       - **Tone**: All output text (Historical, Cultural, Scripture) MUST be written in a **readable Korean Biblical style (성경체/문어체)**.
-       - **Ending Style**: Use endings like "~하였더라", "~하니라", "~이더라", "~가 되니라".
+    Current State: Year ${currentStats.year}, Pop ${currentStats.population}, ${currentStats.technologicalLevel}, ${currentStats.culturalVibe}.
+    Factions: ${JSON.stringify(factions.map(f => ({ name: f.name, power: f.power, tenets: f.tenets })))}
+    Key Figures (Context): ${JSON.stringify(figureContext)}
+    Recent History: ${logSummary}
     
-    Current World State:
-    - Year: ${currentStats.year}
-    - Era: ${currentStats.technologicalLevel}
-    - Atmosphere: ${currentStats.culturalVibe}
-    - Population: ${currentStats.population}
+    Instruction: Advance world by ${yearsToAdvance} years.
     
-    Factions:
-    ${JSON.stringify(factions.map(f => ({ name: f.name, power: f.power, tenets: f.tenets })))}
-
-    Key Figures (Active):
-    ${figureSummary}
+    **CRITICAL: Social Dynamics & Secrets**
+    1. Simulate observation of observation: Generate "Secrets" (gossip, scandals, hidden agendas) for random figures.
+    2. Update Relationships: Figures should develop observation (Rivals, Lovers, Nemesis). Use their IDs for 'targetId'.
+    3. Secrets should range from trivial (observation) to fatal (heresy).
     
-    Recent History:
-    ${logSummary}
-    
-    INPUT CONTEXT:
-    - Years to Advance: ${yearsToAdvance}
-    - Player Action: ${playerInput ? `GOD SPOKE: "${playerInput}"` : "None (Time flows naturally)"}
-    - Decision Context: ${decisionChoice ? `God answered the previous prayer: "${decisionChoice}"` : (decisionChoice === null && playerInput === null ? "God IGNORED the prayer (Silence)." : "No specific prayer.")}
-
-    TASK:
-    Advance the world by exactly ${yearsToAdvance} years.
-    
-    **KEY FIGURE SIMULATION**:
-    - Simulate lives of key figures (achievements, betrayals, deaths).
-    - If a figure dies, set status 'Dead'.
-    - If a faction grows, you may create a NEW figure in 'updatedFigures'.
-
-    INSTRUCTIONS:
-    1. **Log Generation**: 
-       - **SCRIPTURE**: Only if God spoke. (Style: "신께서 이르시되...")
-       - **HISTORICAL**: Major events. (Style: "~가 일어났더라")
-       - **CULTURAL**: Vibe changes. (Style: "~가 유행하니라")
-
-    Output JSON format requirements (Must be valid JSON):
-    - newYear: integer
-    - populationChange: integer
-    - newTechLevel: string
-    - newCulturalVibe: string
-    - logs: Array of { type, content, flavor? }
-    - factions: Updated array of factions
-    - updatedFigures: Array of Person objects
-    - pendingDecision: Null or { senderName, senderRole, message, options: [{id, text, consequenceHint}] }
-    - visualPrompt: string (English description for image generation, keep it concise)
+    Input: ${playerInput ? `GOD SPOKE: "${playerInput}"` : "None"}
+    Decision: ${decisionChoice ? `God answered: "${decisionChoice}"` : "Silence/None"}
   `;
+
+  // For Claude, we need to be explicit about JSON structure in the prompt since we don't use responseSchema
+  const outputFormat = `
+    RETURN JSON ONLY. No markdown ticks. Structure:
+    {
+      "newYear": int,
+      "populationChange": int,
+      "newTechLevel": string,
+      "newCulturalVibe": string,
+      "logs": [{ "type": "SCRIPTURE"|"HISTORICAL"|"CULTURAL"|"SYSTEM", "content": string, "flavor": string }],
+      "factions": [{ "name": string, "power": number, "attitude": number, "tenets": [string], "color": string, "region": string }],
+      "updatedFigures": [{ 
+         "id": string, 
+         "name": string, 
+         "factionName": string, 
+         "role": string, 
+         "description": string, 
+         "biography": string, 
+         "birthYear": int, 
+         "deathYear": int|null, 
+         "status": "Alive"|"Dead"|"Missing", 
+         "traits": [string],
+         "relationships": [{ "targetId": string, "targetName": string, "value": int (-100 to 100), "type": string, "description": string }],
+         "secrets": [{ "id": string, "title": string, "description": string, "severity": "Gossip"|"Scandal"|"Fatal", "knownBy": [string] }]
+      }],
+      "pendingDecision": null | { "senderName": string, "senderRole": string, "message": string, "options": [{ "id": string, "text": string, "consequenceHint": string }] },
+      "visualPrompt": string
+    }
+  `;
+
+  if (isClaude) {
+      return {
+          system: systemContext + outputFormat,
+          user: "Advance the simulation now."
+      };
+  }
+
+  // Gemini uses systemInstruction in config, so here we return the user prompt mainly, 
+  // but for legacy structure we return the full context if needed.
+  // Ideally for Gemini we put context in 'contents'.
+  return systemContext + outputFormat; // Appending format to Gemini prompt too ensures robust JSON
 };
 
+// --- Image Generation ---
+
 const generateIllustration = async (visualPrompt: string): Promise<string | undefined> => {
-  if (!ai) return undefined;
+  // Claude does not support image generation
+  if (currentProvider === 'claude') {
+      console.log("Image generation skipped: Not supported by Claude Haiku.");
+      return undefined;
+  }
+
+  if (!geminiInstance) return undefined;
+  
   try {
-    // Small delay to prevent bursting the image model immediately after text model
     await new Promise(resolve => setTimeout(resolve, 500));
-    
-    const response = await ai.models.generateContent({
-      model: IMAGE_MODEL_NAME,
-      contents: {
-        parts: [{ text: `Fantasy concept art, masterpiece, oil painting style. ${visualPrompt}` }]
-      }
+    const response = await geminiInstance.models.generateContent({
+      model: GEMINI_IMAGE_MODEL,
+      contents: { parts: [{ text: `Fantasy concept art, masterpiece, oil painting style. ${visualPrompt}` }] }
     });
     
     for (const part of response.candidates?.[0]?.content?.parts || []) {
@@ -145,12 +204,14 @@ const generateIllustration = async (visualPrompt: string): Promise<string | unde
     }
     return undefined;
   } catch (error) {
-    console.warn("Image generation failed (likely quota or safety):", error);
-    return undefined; // Fail silently for images, game can proceed without them
+    console.warn("Image generation failed:", error);
+    return undefined;
   }
 };
 
 const MAX_RETRIES = 3;
+
+// --- Main Simulation Loop ---
 
 export const advanceSimulation = async (
   currentStats: WorldStats,
@@ -162,118 +223,47 @@ export const advanceSimulation = async (
   yearsToAdvance: number = 10
 ): Promise<SimulationResult> => {
   
-  if (!ai) {
+  // Validation
+  if ((currentProvider === 'gemini' && !geminiInstance) || (currentProvider === 'claude' && !currentApiKey)) {
       return {
           newYear: currentStats.year,
           populationChange: 0,
-          logs: [{
-              id: `err-${Date.now()}`,
-              year: currentStats.year,
-              type: LogType.SYSTEM,
-              content: "API Key가 설정되지 않았습니다. 설정 메뉴에서 키를 입력해주세요."
-          }],
+          logs: [{ id: `err-${Date.now()}`, year: currentStats.year, type: LogType.SYSTEM, content: "API 연결이 설정되지 않았습니다." }],
           factions, updatedFigures: [], stats: currentStats, pendingDecision: null
       };
   }
 
-  const prompt = generateSimulationPrompt(currentStats, factions, activeFigures, recentLogs, playerInput || undefined, decisionChoice || undefined, yearsToAdvance);
-
   let lastError: any = null;
 
-  // Retry loop for robust API calls
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-        const response = await ai.models.generateContent({
-          model: TEXT_MODEL_NAME,
-          contents: prompt,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                newYear: { type: Type.INTEGER },
-                populationChange: { type: Type.INTEGER },
-                newTechLevel: { type: Type.STRING },
-                newCulturalVibe: { type: Type.STRING },
-                logs: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      type: { type: Type.STRING, enum: ["SCRIPTURE", "HISTORICAL", "CULTURAL", "SYSTEM"] },
-                      content: { type: Type.STRING },
-                      flavor: { type: Type.STRING, description: "Citation style, e.g., '창세기 3:12'" }
-                    }
-                  }
-                },
-                factions: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      name: { type: Type.STRING },
-                      power: { type: Type.NUMBER },
-                      attitude: { type: Type.NUMBER },
-                      tenets: { type: Type.ARRAY, items: { type: Type.STRING } },
-                      color: { type: Type.STRING },
-                      region: { type: Type.STRING }
-                    }
-                  }
-                },
-                updatedFigures: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      name: { type: Type.STRING },
-                      factionName: { type: Type.STRING },
-                      role: { type: Type.STRING },
-                      description: { type: Type.STRING },
-                      biography: { type: Type.STRING },
-                      birthYear: { type: Type.INTEGER },
-                      deathYear: { type: Type.INTEGER, nullable: true },
-                      status: { type: Type.STRING, enum: ["Alive", "Dead", "Missing", "Ascended"] },
-                      traits: { type: Type.ARRAY, items: { type: Type.STRING } }
-                    },
-                    required: ["name", "factionName", "role", "status"]
-                  }
-                },
-                pendingDecision: {
-                  type: Type.OBJECT,
-                  nullable: true,
-                  properties: {
-                    senderName: { type: Type.STRING },
-                    senderRole: { type: Type.STRING },
-                    message: { type: Type.STRING },
-                    options: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          id: { type: Type.STRING },
-                          text: { type: Type.STRING },
-                          consequenceHint: { type: Type.STRING }
-                        }
-                      }
-                    }
-                  }
-                },
-                visualPrompt: { type: Type.STRING }
-              }
-            }
-          }
-        });
+        let data: any;
 
-        let jsonText = response.text || "{}";
-        // Simple sanitization
-        jsonText = jsonText.replace(/```json/g, '').replace(/```/g, '');
-        
-        const data = JSON.parse(jsonText);
+        if (currentProvider === 'gemini') {
+            // --- GEMINI EXECUTION ---
+            const prompt = generateSimulationPrompt(currentStats, factions, activeFigures, recentLogs, playerInput || undefined, decisionChoice || undefined, yearsToAdvance, false);
+            const response = await geminiInstance!.models.generateContent({
+                model: GEMINI_TEXT_MODEL,
+                contents: typeof prompt === 'string' ? prompt : prompt.user, // Handle just in case
+                config: { responseMimeType: "application/json" } // Gemini JSON mode
+            });
+            
+            let jsonText = response.text || "{}";
+            jsonText = jsonText.replace(/```json/g, '').replace(/```/g, '');
+            data = JSON.parse(jsonText);
 
-        // --- Image Generation Logic ---
+        } else {
+            // --- CLAUDE EXECUTION ---
+            const promptObj = generateSimulationPrompt(currentStats, factions, activeFigures, recentLogs, playerInput || undefined, decisionChoice || undefined, yearsToAdvance, true);
+            if (typeof promptObj === 'string') throw new Error("Invalid prompt format for Claude");
+            
+            data = await callClaudeAPI(promptObj.system, promptObj.user);
+        }
+
+        // --- Post Processing ---
+
+        // Image Generation (Only if Gemini)
         let generatedImageUrl: string | undefined;
-        // Only try generating image if we haven't hit rate limits recently (attempt 1)
         if (data.visualPrompt && attempt === 1) {
             generatedImageUrl = await generateIllustration(data.visualPrompt);
         }
@@ -292,6 +282,12 @@ export const advanceSimulation = async (
 
         const newFactions = Array.isArray(data.factions) ? data.factions : factions;
         const updatedFigures = Array.isArray(data.updatedFigures) ? data.updatedFigures : [];
+
+        // Ensure secrets and relationships are arrays for safety
+        updatedFigures.forEach((f: any) => {
+            if (!f.relationships) f.relationships = [];
+            if (!f.secrets) f.secrets = [];
+        });
 
         let sanitizedDecision = null;
         if (data.pendingDecision) {
@@ -317,79 +313,42 @@ export const advanceSimulation = async (
 
     } catch (error: any) {
         lastError = error;
+        console.warn(`Attempt ${attempt} failed (${currentProvider}):`, error);
         
-        // Detect Rate Limit (429) or Quota Issues
-        const isRateLimit = error.status === 429 || error.code === 429 || 
-                            (error.message && (error.message.includes('429') || error.message.includes('quota') || error.message.includes('RESOURCE_EXHAUSTED')));
-
-        console.warn(`Attempt ${attempt} failed (Rate Limit: ${isRateLimit}):`, error);
-
-        if (attempt === MAX_RETRIES) break;
-        
-        // Calculate Backoff
-        // Normal error: 2s, 4s, 8s
-        // Rate limit: 12s, 16s, 20s (Give extended time to cool down)
-        let delay = 2000 * Math.pow(2, attempt - 1);
-        if (isRateLimit) {
-            delay = 12000 + (attempt * 2000); 
-        }
-        
-        await new Promise(resolve => setTimeout(resolve, delay));
+        // Simple backoff
+        await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
     }
   }
 
-  // Final Fallback if all retries fail
-  console.error("Gemini Simulation Final Error:", lastError);
-    
-  let errorMessage = "역사의 흐름이 잠시 혼탁해졌습니다. (연결 불안정)";
-  if (lastError?.status === 403) errorMessage = "시스템 오류: API 키가 유효하지 않거나 권한이 없습니다. (403)";
-  else if (lastError?.status === 429 || lastError?.code === 429 || lastError?.status === "RESOURCE_EXHAUSTED") errorMessage = "시스템 과부하: 요청량이 너무 많습니다. 잠시 기다려주십시오. (429)";
+  // Final Error Handler
+  let errorMessage = "역사의 흐름이 단절되었습니다.";
+  if (lastError?.message?.includes('429')) errorMessage = "시스템 과부하: 잠시 후 다시 시도하십시오.";
+  if (lastError?.message?.includes('CORS')) errorMessage = "브라우저 보안 정책(CORS)으로 인해 Claude API 호출이 차단되었습니다.";
 
   return {
-    newYear: currentStats.year + yearsToAdvance,
+    newYear: currentStats.year,
     populationChange: 0,
-    logs: [{
-      id: `err-${Date.now()}`,
-      year: currentStats.year + yearsToAdvance,
-      type: LogType.SYSTEM,
-      content: errorMessage
-    }],
-    factions: factions, 
-    updatedFigures: [],
-    stats: {
-        ...currentStats,
-        year: currentStats.year + yearsToAdvance
-    },
-    pendingDecision: null
+    logs: [{ id: `err-${Date.now()}`, year: currentStats.year, type: LogType.SYSTEM, content: errorMessage }],
+    factions: factions, updatedFigures: [], stats: currentStats, pendingDecision: null
   };
 };
 
-/**
- * Generates a specific portrait for a Key Figure.
- */
 export const generatePortrait = async (person: Person): Promise<string | undefined> => {
-  if (!ai) return undefined;
+  // Claude fallback: return undefined
+  if (currentProvider === 'claude') return undefined;
+
+  if (!geminiInstance) return undefined;
   try {
-    const prompt = `A highly detailed fantasy portrait of ${person.name}, who is a ${person.role} of the ${person.factionName}. 
-    Description: ${person.description}. 
-    Traits: ${person.traits.join(", ")}.
-    Style: Oil painting, dramatic lighting, dignified, neutral background, upper body, masterpiece.`;
-
-    const response = await ai.models.generateContent({
-      model: IMAGE_MODEL_NAME,
-      contents: {
-        parts: [{ text: prompt }]
-      }
+    const prompt = `Fantasy portrait of ${person.name}, ${person.role}, ${person.factionName}. ${person.description}. Oil painting style.`;
+    const response = await geminiInstance.models.generateContent({
+      model: GEMINI_IMAGE_MODEL,
+      contents: { parts: [{ text: prompt }] }
     });
-
     for (const part of response.candidates?.[0]?.content?.parts || []) {
-      if (part.inlineData) {
-        return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-      }
+        if (part.inlineData) return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
     }
     return undefined;
   } catch (error) {
-    console.warn("Portrait generation failed:", error);
     return undefined;
   }
 };

@@ -177,7 +177,9 @@ export const generateInitialPeople = (): Person[] => {
         biography: `${name}은(는) ${factionName}의 설립 초기부터 중요한 역할을 맡아왔습니다. ${role}로서의 능력은 타의 추종을 불허하며, 세력의 기틀을 다지는 데 공헌했습니다.`,
         birthYear: -20 - (Math.floor(Math.random() * 20)), // Born before year 1
         status: 'Alive',
-        traits: ['Founder', 'Loyal']
+        traits: ['Founder', 'Loyal'],
+        relationships: [],
+        secrets: []
       });
     });
   });

@@ -1,7 +1,8 @@
+
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, Play, Key, Bot, ChevronRight, CheckCircle, AlertCircle, X } from 'lucide-react';
-import { initializeAI } from '../services/geminiService';
+import { Settings, Play, Key, Bot, ChevronRight, CheckCircle, AlertCircle, X, ImageOff } from 'lucide-react';
+import { initializeAI, AIProvider } from '../services/geminiService';
 import { audio } from '../services/audioService';
 
 interface StartScreenProps {
@@ -11,44 +12,65 @@ interface StartScreenProps {
 const StartScreen: React.FC<StartScreenProps> = ({ onStart }) => {
   const [showSettings, setShowSettings] = useState(false);
   const [apiKey, setApiKey] = useState('');
-  const [selectedModel, setSelectedModel] = useState<'gemini' | 'gpt' | 'claude'>('gemini');
+  const [selectedProvider, setSelectedProvider] = useState<AIProvider>('gemini');
   const [isKeyValid, setIsKeyValid] = useState<boolean | null>(null);
 
-  // Load saved key on mount
+  // Load saved key/provider on mount
   useEffect(() => {
-    const savedKey = localStorage.getItem('user_gemini_api_key');
+    const savedProvider = (localStorage.getItem('ai_provider') as AIProvider) || 'gemini';
+    setSelectedProvider(savedProvider);
+    
+    const keyKey = savedProvider === 'gemini' ? 'user_gemini_api_key' : 'user_claude_api_key';
+    const savedKey = localStorage.getItem(keyKey);
+    
     if (savedKey) {
       setApiKey(savedKey);
-      setIsKeyValid(true); // Assume valid if exists
+      setIsKeyValid(true);
+    } else {
+      setApiKey('');
+      setIsKeyValid(null);
     }
   }, []);
+
+  // Update input field when provider changes
+  useEffect(() => {
+    const keyKey = selectedProvider === 'gemini' ? 'user_gemini_api_key' : 'user_claude_api_key';
+    const savedKey = localStorage.getItem(keyKey) || '';
+    setApiKey(savedKey);
+    setIsKeyValid(!!savedKey);
+  }, [selectedProvider]);
 
   const handleStartGame = () => {
     audio.playClick();
     
-    // Initialize AI with current key (or empty to use env default)
-    const success = initializeAI(apiKey);
+    // Initialize AI with current config
+    const success = initializeAI(apiKey, selectedProvider);
     
-    // If user explicitly entered a key, validate it roughly (length check or simple existence)
+    // Validate
     if (apiKey && !success) {
         setIsKeyValid(false);
         return;
     }
     
-    // Play start sequence
     onStart();
   };
 
   const handleSaveSettings = () => {
     audio.playClick();
-    initializeAI(apiKey);
-    setShowSettings(false);
-    setIsKeyValid(!!apiKey);
+    const success = initializeAI(apiKey, selectedProvider);
+    
+    if (success) {
+        setShowSettings(false);
+        setIsKeyValid(true);
+    } else {
+        setIsKeyValid(false);
+    }
   };
 
   const handleClearKey = () => {
       setApiKey('');
-      localStorage.removeItem('user_gemini_api_key');
+      const keyKey = selectedProvider === 'gemini' ? 'user_gemini_api_key' : 'user_claude_api_key';
+      localStorage.removeItem(keyKey);
       setIsKeyValid(null);
   }
 
@@ -118,7 +140,7 @@ const StartScreen: React.FC<StartScreenProps> = ({ onStart }) => {
       </motion.div>
 
       <div className="absolute bottom-6 text-[10px] text-slate-600 font-mono">
-        v1.0.0 • Powered by Google Gemini
+        v1.1.0 • Multi-LLM Engine Supported
       </div>
 
       {/* Settings Modal */}
@@ -147,16 +169,23 @@ const StartScreen: React.FC<StartScreenProps> = ({ onStart }) => {
 
                     <div className="space-y-6">
                         
-                        {/* Model Selector (Visual Only for now) */}
+                        {/* Model Selector */}
                         <div className="space-y-2">
                             <label className="text-xs text-slate-500 uppercase tracking-widest font-bold">Inference Engine</label>
                             <div className="grid grid-cols-3 gap-2">
                                 <button 
-                                    onClick={() => setSelectedModel('gemini')}
-                                    className={`p-3 rounded-lg border flex flex-col items-center gap-1 transition-all ${selectedModel === 'gemini' ? 'bg-god-gold/10 border-god-gold text-god-gold' : 'bg-slate-900 border-slate-700 text-slate-500 opacity-50'}`}
+                                    onClick={() => { audio.playClick(); setSelectedProvider('gemini'); }}
+                                    className={`p-3 rounded-lg border flex flex-col items-center gap-1 transition-all ${selectedProvider === 'gemini' ? 'bg-god-gold/10 border-god-gold text-god-gold' : 'bg-slate-900 border-slate-700 text-slate-500 hover:border-slate-500'}`}
                                 >
                                     <span className="font-bold text-sm">Gemini</span>
-                                    <span className="text-[9px]">Google</span>
+                                    <span className="text-[9px]">Flash 2.5</span>
+                                </button>
+                                <button 
+                                    onClick={() => { audio.playClick(); setSelectedProvider('claude'); }}
+                                    className={`p-3 rounded-lg border flex flex-col items-center gap-1 transition-all ${selectedProvider === 'claude' ? 'bg-god-gold/10 border-god-gold text-god-gold' : 'bg-slate-900 border-slate-700 text-slate-500 hover:border-slate-500'}`}
+                                >
+                                    <span className="font-bold text-sm">Claude</span>
+                                    <span className="text-[9px]">Haiku 3.5</span>
                                 </button>
                                 <button 
                                     disabled
@@ -165,22 +194,17 @@ const StartScreen: React.FC<StartScreenProps> = ({ onStart }) => {
                                     <span className="font-bold text-sm">GPT-4o</span>
                                     <span className="text-[9px]">Soon</span>
                                 </button>
-                                <button 
-                                    disabled
-                                    className="p-3 rounded-lg border bg-slate-900 border-slate-800 text-slate-600 flex flex-col items-center gap-1 opacity-40 cursor-not-allowed"
-                                >
-                                    <span className="font-bold text-sm">Claude 3.5</span>
-                                    <span className="text-[9px]">Soon</span>
-                                </button>
                             </div>
                         </div>
 
                         {/* API Key Input */}
                         <div className="space-y-2">
-                            <label className="text-xs text-slate-500 uppercase tracking-widest font-bold flex justify-between">
-                                <span>API Credential</span>
-                                {isKeyValid && <span className="text-green-500 flex items-center gap-1"><CheckCircle size={10} /> Saved</span>}
-                            </label>
+                            <div className="flex justify-between items-center">
+                                <label className="text-xs text-slate-500 uppercase tracking-widest font-bold">
+                                    {selectedProvider === 'gemini' ? 'Gemini API Key' : 'Anthropic API Key'}
+                                </label>
+                                {isKeyValid && <span className="text-green-500 flex items-center gap-1 text-[10px]"><CheckCircle size={10} /> Saved</span>}
+                            </div>
                             
                             <div className="relative">
                                 <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
@@ -190,7 +214,7 @@ const StartScreen: React.FC<StartScreenProps> = ({ onStart }) => {
                                     type="password" 
                                     value={apiKey}
                                     onChange={(e) => setApiKey(e.target.value)}
-                                    placeholder={isKeyValid ? "••••••••••••••••" : "Paste your Gemini API Key here"}
+                                    placeholder={selectedProvider === 'gemini' ? "Paste Gemini API Key" : "Paste sk-ant-..."}
                                     className="w-full bg-slate-900 border border-slate-700 rounded-lg py-3 pl-10 pr-10 text-slate-200 focus:outline-none focus:border-god-gold focus:ring-1 focus:ring-god-gold/50 placeholder-slate-600 font-mono text-sm"
                                 />
                                 {apiKey && (
@@ -199,9 +223,17 @@ const StartScreen: React.FC<StartScreenProps> = ({ onStart }) => {
                                     </button>
                                 )}
                             </div>
+                            
+                            {selectedProvider === 'claude' && (
+                                <div className="flex items-center gap-2 text-[10px] text-orange-400/80 bg-orange-900/20 p-2 rounded border border-orange-500/20">
+                                    <ImageOff size={12} />
+                                    <span>Image generation is not supported by Claude Haiku.</span>
+                                </div>
+                            )}
+
                             <p className="text-[10px] text-slate-500 leading-tight">
-                                * Leave empty to use the default shared quota (Subject to rate limits).
-                                <br/>* Keys are stored locally in your browser.
+                                * Keys are stored locally in your browser.
+                                {selectedProvider === 'claude' && <span className="block mt-1 text-slate-400">* Note: Claude API might require a proxy or disable CORS in some environments.</span>}
                             </p>
                         </div>
 
